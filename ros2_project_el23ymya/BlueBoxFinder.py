@@ -15,8 +15,11 @@ from rclpy.exceptions import ROSInterruptException
 import signal
 import math
 from .ArtificialPotentialField import ArtificialPotentialField
+from .GreedySearch import PathPlanner
+import matplotlib.pyplot as plt
 
 MAX_ANGULAR_VEL = 2.84
+MAX_VEL = 0.20
 
 class BlueBoxFinder(Node):
     def __init__(self):
@@ -31,7 +34,20 @@ class BlueBoxFinder(Node):
         self.sensitivity = 20
         self.hsv_blue_lower = np.array([120 - self.sensitivity, 100, 100])
         self.hsv_blue_upper = np.array([120 + self.sensitivity, 255, 255])
+        
+        self.hsv_red_lower1 = np.array([180 - self.sensitivity, 100, 100])
+        self.hsv_red_upper1 = np.array([179, 255, 255])
+        self.hsv_red_upper2 = np.array([0 + self.sensitivity, 255, 255])
+        self.hsv_red_lower2 = np.array([0, 100, 100])
+        
+        self.hsv_green_lower = np.array([60 - self.sensitivity, 100, 100])
+        self.hsv_green_upper = np.array([60 + self.sensitivity, 255, 255])
+        
+        self.red_found = False
+        self.green_found = False
+        self.blue_found = False
         self.position = None
+        self.arrived = False
         
     def odom_callback(self, msg):
         x = msg.pose.pose.position.x
@@ -41,152 +57,182 @@ class BlueBoxFinder(Node):
         z = msg.pose.pose.orientation.z
         w = msg.pose.pose.orientation.w
         self.yaw = math.degrees(math.atan2(z, w) * 2)
+        if self.yaw < 0:
+            self.yaw += 360
 
-    # def send_goal(self, x, y, yaw):
-    #     self.get_logger().info(f'Moving to: [x: {x}, y: {y}, yaw: {yaw}]')
-    #     self.arrived = False
+    def send_goal(self, x, y, yaw):
+        self.get_logger().info(f'Moving to: [x: {x}, y: {y}, yaw: {yaw}]')
+        self.arrived = False
         
-    #     goal_msg = NavigateToPose.Goal()
-    #     goal_msg.pose.header.frame_id = 'map'
-    #     goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
+        goal_msg = NavigateToPose.Goal()
+        goal_msg.pose.header.frame_id = 'map'
+        goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
 
-    #     # Position
-    #     goal_msg.pose.pose.position.x = x
-    #     goal_msg.pose.pose.position.y = y
+        # Position
+        goal_msg.pose.pose.position.x = x
+        goal_msg.pose.pose.position.y = y
 
-    #     # Orientation
-    #     goal_msg.pose.pose.orientation.z = np.sin(yaw / 2)
-    #     goal_msg.pose.pose.orientation.w = np.cos(yaw / 2)
+        # Orientation
+        goal_msg.pose.pose.orientation.z = np.sin(yaw / 2)
+        goal_msg.pose.pose.orientation.w = np.cos(yaw / 2)
 
-    #     self.action_client.wait_for_server()
-    #     self.send_goal_future = self.action_client.send_goal_async(goal_msg, feedback_callback=self.feedback_callback)
-    #     self.send_goal_future.add_done_callback(self.goal_response_callback)
+        self.action_client.wait_for_server()
+        self.send_goal_future = self.action_client.send_goal_async(goal_msg, feedback_callback=self.feedback_callback)
+        self.send_goal_future.add_done_callback(self.goal_response_callback)
 
-    # def goal_response_callback(self, future):
-    #     goal_handle = future.result()
-    #     if not goal_handle.accepted:
-    #         self.get_logger().info('Goal rejected')
-    #         return
+    def goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().info('Goal rejected')
+            return
 
-    #     self.get_logger().info('Goal accepted')
-    #     self.get_result_future = goal_handle.get_result_async()
-    #     self.get_result_future.add_done_callback(self.get_result_callback)
+        self.get_logger().info('Goal accepted')
+        self.get_result_future = goal_handle.get_result_async()
+        self.get_result_future.add_done_callback(self.get_result_callback)
 
-    # def get_result_callback(self, future):
-    #     result = future.result().result
-    #     self.get_logger().info(f'Navigation result: {result}')
+    def get_result_callback(self, future):
+        result = future.result().result
+        self.arrived = True
+        self.get_logger().info(f'Navigation result: {result}')
 
-    # def feedback_callback(self, feedback_msg):
-    #     feedback = feedback_msg.feedback
-    #     # NOTE: if you want, you can use the feedback while the robot is moving.
-    #     #       uncomment to suit your need.
+    def feedback_callback(self, feedback_msg):
+        feedback = feedback_msg.feedback
+        # NOTE: if you want, you can use the feedback while the robot is moving.
+        #       uncomment to suit your need.
 
-    #     ## Access the current pose
-    #     current_pose = feedback_msg.feedback.current_pose
-    #     self.position = current_pose.pose.position
-    #     distance = np.linalg.norm(self.target - self.position)
-    #     if distance < 0.2:
-    #         self.arrived = True
-    #     #orientation = current_pose.pose.orientation
+        ## Access the current pose
+        current_pose = feedback_msg.feedback.current_pose
+        distance = np.linalg.norm(self.target - self.position)
+        if distance < 0.2:
+            self.arrived = True
+        #orientation = current_pose.pose.orientation
 
-    #     ## Access other feedback fields
-    #     #navigation_time = feedback_msg.feedback.navigation_time
-    #     #distance_remaining = feedback_msg.feedback.distance_remaining
+        ## Access other feedback fields
+        #navigation_time = feedback_msg.feedback.navigation_time
+        #distance_remaining = feedback_msg.feedback.distance_remaining
 
-    #     ## Print or process the feedback data
-    #     #self.get_logger().info(f'Current Pose: [x: {position.x}, y: {position.y}, z: {position.z}]')
-    #     #self.get_logger().info(f'Distance Remaining: {distance_remaining}')
+        ## Print or process the feedback data
+        #self.get_logger().info(f'Current Pose: [x: {position.x}, y: {position.y}, z: {position.z}]')
+        #self.get_logger().info(f'Distance Remaining: {distance_remaining}')
         
     def image_callback(self, data):
         bridge = CvBridge()
         image = bridge.imgmsg_to_cv2(data, "bgr8")
         
         hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-        blue_mask = cv2.inRange(hsv_image, self.hsv_blue_lower, self.hsv_blue_upper)
-        # print(blue_mask)
+        self.blue_mask = cv2.inRange(hsv_image, self.hsv_blue_lower, self.hsv_blue_upper)
                 
-        filtered_img = cv2.bitwise_and(image, image, mask=blue_mask)
-        self.blue_found = np.any(blue_mask)
+        filtered_img = cv2.bitwise_and(image, image, mask=self.blue_mask)
+        self.blue_found = np.any(self.blue_mask)
+        
+        red_mask_1 = cv2.inRange(hsv_image, self.hsv_red_lower1, self.hsv_red_upper1)
+        red_mask_2 = cv2.inRange(hsv_image, self.hsv_red_lower2, self.hsv_red_upper2)
+        red_mask = cv2.bitwise_or(red_mask_1, red_mask_2)
+        red_filtered = cv2.bitwise_and(image, image, mask=red_mask)
+        cv2.namedWindow('Red_Feed',cv2.WINDOW_NORMAL) 
+        cv2.imshow('Red_Feed', red_filtered)
+        cv2.resizeWindow('Red_Feed', 320, 240) 
+        cv2.waitKey(3)
+        if not self.red_found:
+            self.red_found = np.any(red_mask)
+            if self.red_found:
+                self.get_logger().info("Red Box is found") 
+        
+        green_mask = cv2.inRange(hsv_image, self.hsv_green_lower, self.hsv_green_upper)
+        green_filtered = cv2.bitwise_and(image, image, mask=green_mask)
+        cv2.namedWindow('Green_Feed',cv2.WINDOW_NORMAL) 
+        cv2.imshow('Green_Feed', green_filtered)
+        cv2.resizeWindow('Green_Feed', 320, 240) 
+        cv2.waitKey(3)
+        if not self.green_found:
+            self.green_found = np.any(green_mask)
+            if self.green_found:
+                self.get_logger().info("Green Box is found")
+            
         cv2.namedWindow('camera_Feed',cv2.WINDOW_NORMAL) 
         cv2.imshow('camera_Feed', filtered_img)
         cv2.resizeWindow('camera_Feed', 320, 240) 
         cv2.waitKey(3)
         # print(self.blue_found)
         
-    def move(self, goal):
-        current_pos = self.position
-        print(f"Goal Position is {goal}, Current Position is {self.position}")
-        direction = goal - current_pos
+    # def move(self, goal):
+    #     current_pos = self.position
+    #     print(f"Goal Position is {goal}, Current Position is {self.position}")
+    #     direction = goal - current_pos
         
-        obstacles_row, obstacles_column = np.where(self.image == 0)
-        obstacles_coord = self.coord[obstacles_row, obstacles_column, :]
-        apf = ArtificialPotentialField(
-            targets=goal,
-            obstacles=obstacles_coord,
-            att_gain=0.1,
-            rep_gain=0.1,
-            max_distance=0.5
-        )
-        apf_direction = apf.resultant_force(current_pos)
-        print(f"APF Direction {apf_direction}")
+    #     obstacles_row, obstacles_column = np.where(self.image == 0)
+    #     obstacles_coord = self.coord[obstacles_row, obstacles_column, :]
+    #     apf = ArtificialPotentialField(
+    #         targets=goal,
+    #         obstacles=obstacles_coord,
+    #         att_gain=0.1,
+    #         rep_gain=0.1,
+    #         max_distance=0.5
+    #     )
+    #     apf_direction = apf.resultant_force(current_pos)
+    #     print(f"APF Direction {apf_direction}")
         
-        def adjust_angle(direction):
-            print(f"Direction {direction}")
-            angle = self.find_angle(direction)
+    #     def adjust_angle(direction):
+    #         print(f"Direction {direction}")
+    #         angle = self.find_angle(direction)
             
-            angle_error = angle - self.yaw
-            if angle_error > 180:
-                angle_error -= 360
-            elif angle_error < -180:
-                angle_error += 360
+    #         angle_error = angle - self.yaw
+    #         if angle_error > 180:
+    #             angle_error -= 360
+    #         elif angle_error < -180:
+    #             angle_error += 360
                 
-            print(f"Current Angle {self.yaw}, Goal Angle {angle}, Error {angle_error}")
+    #         print(f"Current Angle {self.yaw}, Goal Angle {angle}, Error {angle_error}")
             
-            if abs(angle_error) > 5:
-                while True:
-                    angle_error = angle - self.yaw
-                    if angle_error > 180:
-                        angle_error -= 360
-                    elif angle_error < -180:
-                        angle_error += 360
+    #         if abs(angle_error) > 5:
+    #             while True:
+    #                 angle_error = angle - self.yaw
+    #                 if angle_error > 180:
+    #                     angle_error -= 360
+    #                 elif angle_error < -180:
+    #                     angle_error += 360
                         
-                    print(f"Current Angle {self.yaw}, Goal Angle {angle}, Error {angle_error}")
+    #                 print(f"Current Angle {self.yaw}, Goal Angle {angle}, Error {angle_error}")
                         
-                    if abs(angle_error) < 1:
-                        print("Correct Angle Reached!")
-                        self.stop()
-                        break
-                    else:
-                        angle_control = MAX_ANGULAR_VEL * (angle_error / 180)
-                        self.rotate(angle_control)
+    #                 if abs(angle_error) < 1:
+    #                     print("Correct Angle Reached!")
+    #                     self.stop()
+    #                     break
+    #                 else:
+    #                     angle_control = MAX_ANGULAR_VEL * (angle_error / 180)
+    #                     self.rotate(angle_control)
                         
-        adjust_angle(direction)
-        counter = 0
+    #     adjust_angle(direction)
+    #     counter = 0
                     
-        error = np.linalg.norm(goal - self.position)
-        if error > 0.1:
-            while True:
-                print(f"Current Position {self.position}, Goal Position {goal}")
-                error = np.linalg.norm(goal - self.position)
-                control = error * 2
-                control = np.clip(control, -0.2, 0.2)
-                self.move_forward(float(control))
-                if error < 0.05:
-                    print("Correct Distance Reached!")
-                    self.stop()
-                    break
-                counter += 1
-                if counter == 40:
-                    self.stop()
-                    adjust_angle(goal - self.position)
-                    counter = 0
+    #     error = np.linalg.norm(goal - self.position)
+    #     if error > 0.1:
+    #         while True:
+    #             print(f"Current Position {self.position}, Goal Position {goal}")
+    #             error = np.linalg.norm(goal - self.position)
+    #             control = error * 2
+    #             control = np.clip(control, -0.2, 0.2)
+    #             self.move_forward(float(control))
+    #             if error < 0.1:
+    #                 print("Correct Distance Reached!")
+    #                 self.stop()
+    #                 break
+    #             elif error < 0.4 and counter > 8:
+    #                 counter = 0
+    #                 self.stop()
+    #                 adjust_angle(goal - self.position)
+    #             counter += 1
+    #             if counter == 40:
+    #                 self.stop()
+    #                 adjust_angle(goal - self.position)
+    #                 counter = 0
         
-    def find_angle(self, direction):
-        angle = math.atan2(direction[1], direction[0])
-        angle = math.degrees(angle)
-        if angle < 0:
-            angle += 360
-        return angle
+    # def find_angle(self, direction):
+    #     angle = math.atan2(direction[1], direction[0])
+    #     angle = math.degrees(angle)
+    #     if angle < 0:
+    #         angle += 360
+    #     return angle
     
     def rotate(self, value):
         desired_rotation = Twist()
@@ -236,9 +282,9 @@ class BlueBoxFinder(Node):
         self.image[self.image != 0] = 1
         # print(type(self.image))
 
-    def generate_coordinates(self, x_start, x_end, y_start, y_end):
+    def generate_coordinates(self, x_end, x_start, y_start, y_end):
         shape = self.image.shape
-        x_axis = np.linspace(x_start, x_end, shape[1])
+        x_axis = np.linspace(x_start, x_end, shape[1]) - 1.8
         y_axis = np.linspace(y_start, y_end, shape[0])
         self.coord = np.zeros((shape[0], shape[1], 2))
         for index, y in enumerate(y_axis):
@@ -248,8 +294,9 @@ class BlueBoxFinder(Node):
         max_index_x = decomposed_image.shape[1]
         max_index_y = decomposed_image.shape[0]
         
-        self.explored.append(current_index.tolist())
-        self.unexplored.remove(current_index.tolist())
+        if current_index not in self.explored or current_index in self.unexplored:  
+            self.explored.append(current_index)
+            self.unexplored.remove(current_index)
         
         # nodes_to_expand = []
         # x, y = np.where(nodes == current)
@@ -260,19 +307,151 @@ class BlueBoxFinder(Node):
         # left = current_index[0] - 1
         # right = current_index[0] + 1
             
-        for i in range(current_index[0] - 1, current_index[0] + 2):
-            for j in range(current_index[1] - 1, current_index[1] + 2):
-                node = np.array([i, j])
+        # for i in range(current_index[0] - 1, current_index[0] + 2):
+        #     for j in range(current_index[1] - 1, current_index[1] + 2):
+        #         node = np.array([i, j])
+        #         if validate_index(node, max_index_x, max_index_y):
+        #             free = decomposed_image[node[0], node[1]]
+        #             print(free, node)
+        #             node = node.tolist()
+        #             if free.any() and node not in self.explored:
+        #                 # print(node.tolist())
+        #                 print(self.unexplored)
+        #                 print("Node Added!")
+        #                 self.explored.append(node)
+        #                 self.unexplored.remove(node)
+                        
+        # Left
+        idx = 0
+        stop = False
+        while not stop:
+            for i in range(current_index[1] - 1 - idx, current_index[1] + 2 + idx):
+                node = np.array([current_index[0] - idx, i])
                 if validate_index(node, max_index_x, max_index_y):
                     free = decomposed_image[node[0], node[1]]
-                    print(free, node)
                     node = node.tolist()
                     if free.any() and node not in self.explored:
                         # print(node.tolist())
-                        print(self.unexplored)
+                        #print(self.unexplored)
                         print("Node Added!")
                         self.explored.append(node)
                         self.unexplored.remove(node)
+                    elif not free.any():
+                        stop = True
+            idx += 1
+            
+        # Right
+        idx = 0
+        stop = False
+        while not stop:
+            for i in range(current_index[1] - 1 - idx, current_index[1] + 2 + idx):
+                node = np.array([current_index[0] + idx, i])
+                if validate_index(node, max_index_x, max_index_y):
+                    free = decomposed_image[node[0], node[1]]
+                    node = node.tolist()
+                    if free.any() and node not in self.explored:
+                        # print(node.tolist())
+                        #print(self.unexplored)
+                        print("Node Added!")
+                        self.explored.append(node)
+                        self.unexplored.remove(node)
+                    elif not free.any():
+                        stop = True
+            idx += 1
+            
+        # Up
+        idx = 0
+        stop = False
+        while not stop:
+            for i in range(current_index[0] - 1 - idx, current_index[0] + 2 + idx):
+                node = np.array([i, current_index[1] - idx])
+                if validate_index(node, max_index_x, max_index_y):
+                    free = decomposed_image[node[0], node[1]]
+                    node = node.tolist()
+                    if free.any() and node not in self.explored:
+                        # print(node.tolist())
+                        #print(self.unexplored)
+                        print("Node Added!")
+                        self.explored.append(node)
+                        self.unexplored.remove(node)
+                    elif not free.any():
+                        stop = True
+            idx += 1
+            
+        # Down
+        idx = 0
+        stop = False
+        while not stop:
+            for i in range(current_index[0] - 1 - idx, current_index[0] + 2 + idx):
+                node = np.array([i, current_index[1] + idx])
+                if validate_index(node, max_index_x, max_index_y):
+                    free = decomposed_image[node[0], node[1]]
+                    node = node.tolist()
+                    if free.any() and node not in self.explored:
+                        # print(node.tolist())
+                        #print(self.unexplored)
+                        print("Node Added!")
+                        self.explored.append(node)
+                        self.unexplored.remove(node)
+                    elif not free.any():
+                        stop = True
+            idx += 1
+       
+    def find_centre(self):
+        contours, _ = cv2.findContours(self.blue_mask, mode=cv2.RETR_TREE, method=cv2.CHAIN_APPROX_SIMPLE)
+
+        if len(contours) > 0:
+            c = max(contours, key=cv2.contourArea)
+
+            #Moments can calculate the center of the contour
+            M = cv2.moments(c)
+            cx, cy = int(M['m10']/M['m00']), int(M['m01']/M['m00'])
+            
+        return cx, cy
+    
+    def find_area(self):
+        contours, _ = cv2.findContours(self.blue_mask, mode=cv2.RETR_TREE, method=cv2.CHAIN_APPROX_SIMPLE)
+
+        if len(contours) > 0:
+            c = max(contours, key=cv2.contourArea)
+
+            area = cv2.contourArea(c)
+            
+        return area
+       
+    def centre_blue_box(self):
+        cx, cy = self.find_centre()
+        TARGET_CENTRE = 478
+        while cx < TARGET_CENTRE - 8 or cx > TARGET_CENTRE + 8:
+            # The speed of rotation is dependent on the error. An addition division by 5 is added to reduce speed
+            error = ((TARGET_CENTRE - cx) / TARGET_CENTRE * MAX_ANGULAR_VEL) / 5
+            self.rotate(error)
+            print(f"Rotating: {error}")
+            cx, cy = self.find_centre()
+            
+    def move_towards_box(self):
+        self.centre_blue_box()
+        area = self.find_area()
+        print(area)
+        start_counter = 0
+        readjust_counter = 0
+        GRADUAL_ACC_THRESHOLD = 15
+        TARGET_AREA = 390_000 # The area where we are 1 m away from the box
+        READJUST_THRESHOLD = 50
+        while area < TARGET_AREA - 5_000 or area > TARGET_AREA + 5_000:
+            error = (TARGET_AREA - area) / TARGET_AREA * MAX_VEL
+            if start_counter < GRADUAL_ACC_THRESHOLD:
+                # To avoid a large and instantaneous acceleration, a counter is added which limits the speed
+                start_counter += 1
+                error = min(error, MAX_VEL * start_counter / GRADUAL_ACC_THRESHOLD) # This is meant for a more gradual change in speed
+                
+            self.move_forward(error) # Move towards the box to reduce the error
+            print(f"Moving: {error}, Current Area = {area}")
+            area = self.find_area() # Recalculate the area
+            readjust_counter += 1
+            if readjust_counter >= READJUST_THRESHOLD:
+                # Occasionally readjust such that the blue box is in the centre
+                self.centre_blue_box()
                     
     def controller(self):
         while self.position is None:
@@ -286,7 +465,7 @@ class BlueBoxFinder(Node):
         self.generate_coordinates(9.93, -12.2, 6.39, -15.8)
         
         print("Decomposing Image...")
-        decomposed_image = min_pool(self.image, 25)
+        decomposed_image = min_pool(self.image, 20)
         # x_axis = np.linspace(0, decomposed_image.shape[1] - 1, decomposed_image.shape[1])
         # y_axis = np.linspace(0, decomposed_image.shape[0] - 1, decomposed_image.shape[0])
         # self.unexplored = np.zeros((decomposed_image.shape[0], decomposed_image.shape[1], 2))
@@ -297,37 +476,62 @@ class BlueBoxFinder(Node):
         self.unexplored = np.argwhere(decomposed_image).tolist()
         
         print("Decomposing Coordinates...")
-        decomposed_coord = redefine_values(self.coord, 25, 2)
+        decomposed_coord = redefine_values(self.coord, 20, 2)
         
         print("Finding Current Position...")
         # print(f"{decomposed_coord.shape}, {self.position}")
         current_index = find_current_node(self.position, decomposed_coord)
         
-        print(f"Current position is {decomposed_coord[current_index[0], current_index[1], :]}")
+        print(f"Current position is {decomposed_coord[current_index[0], current_index[1], :]}, Index {current_index}")
         blue_found = False
-        while not blue_found:
+        operation_complete = False
+        while not operation_complete:
             blue_found = self.spin_360()
             self.stop()
-            if blue_found:
-                while True:
-                    self.stop()
+            if blue_found or self.blue_found:
+                self.move_towards_box()
+                self.stop()
+                operation_complete = True
             else:
                 print("Expanding Node...")
                 self.expand_point(current_index, decomposed_image)
                 
                 print("Choosing Next Node...")
                 next_node_index = find_nearest_node(current_index, self.unexplored)
-                row_index = next_node_index // decomposed_coord.shape[1]
-                col_index = next_node_index % decomposed_coord.shape[1]
-                next_node_index = np.array([row_index, col_index])
-            
-                next_node = decomposed_coord[next_node_index[0], next_node_index[1]]
+                print(f"Node Chosen is {decomposed_coord[next_node_index[0], next_node_index[1]]}, Index {next_node_index}")
+                # next_node = decomposed_coord[next_node_index[0], next_node_index[1]]
                 
-                print(f"Node Chosen is {next_node}")
-                self.move(next_node)
+                planner = PathPlanner(current_index, next_node_index, decomposed_image)
+                path = planner.plan()
+                path.pop(0)
+                for node_index in path:
+                    plt.imshow(decomposed_image, cmap='gray')
+                    path_print = np.array(path)
+                    un_print = np.array(self.explored)
+                    plt.scatter(un_print[:, 1], un_print[:, 0])
+                    plt.scatter(path_print[:, 1], path_print[:, 0], marker='X')
+                    plt.show(block=False)
+                    
+                    next_node = decomposed_coord[node_index[0], node_index[1]]
+                # path.pop(0) # Remove the start node
+                # for next_index in path:
+                #     next_node = decomposed_coord[next_index[0], next_index[1]]
+                #     print(f"Going To Node {next_node}, Index {next_index}")
+                #     self.move(next_node)
+                
+                    self.target = next_node
+                    self.send_goal(float(next_node[0]), float(next_node[1]), 0.0)  # example coordinates
+                    distance = np.linalg.norm(self.target - self.position)
+                    while not self.arrived:
+                        print(distance)
+                        distance = np.linalg.norm(self.target - self.position)
+                        time.sleep(1)
+                        
+                    self.spin_360()
+                    self.expand_point(node_index, decomposed_image)
                 current_index = next_node_index
-                # while not self.arrived:
-                #     time.sleep(1)
+        while True:
+                time.sleep(10)
     
     
 def min_pool(frame, kernel_size):
@@ -392,8 +596,9 @@ def redefine_values(frame, kernel_size, dimensions):
     return result_arr
 
 def find_nearest_node(current, nodes):
-    distances = np.linalg.norm(nodes - current, axis=1)
-    return np.argmin(distances)
+    distances = np.linalg.norm(np.array(nodes) - np.array(current), axis=1)
+    node = nodes[np.argmin(distances)]
+    return node
 
 def validate_index(index, max_x, max_y):
     if index[0] < 0 or index[0] > max_x or index[1] < 0 or index[1] > max_y:
@@ -428,7 +633,7 @@ def find_current_node(position, image):
     index_flat = np.argmin(distances)
     row_index = index_flat // image.shape[1]
     col_index = index_flat % image.shape[1]
-    return np.array([row_index, col_index])
+    return [row_index, col_index]
 
 def main():
     def signal_handler(sig, frame):
