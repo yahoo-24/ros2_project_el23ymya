@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 
 MAX_ANGULAR_VEL = 2.84
 MAX_VEL = 0.20
+AREA_THRESHOLD = 30_000
 
 class BlueBoxFinder(Node):
     def __init__(self):
@@ -123,7 +124,13 @@ class BlueBoxFinder(Node):
         self.blue_mask = cv2.inRange(hsv_image, self.hsv_blue_lower, self.hsv_blue_upper)
                 
         filtered_img = cv2.bitwise_and(image, image, mask=self.blue_mask)
-        self.blue_found = np.any(self.blue_mask)
+        if np.any(self.blue_mask):
+            area = self.find_area()
+            print(area)
+            if area > AREA_THRESHOLD:
+                self.blue_found = True
+        else:
+            self.blue_found = False
         
         red_mask_1 = cv2.inRange(hsv_image, self.hsv_red_lower1, self.hsv_red_upper1)
         red_mask_2 = cv2.inRange(hsv_image, self.hsv_red_lower2, self.hsv_red_upper2)
@@ -284,7 +291,7 @@ class BlueBoxFinder(Node):
 
     def generate_coordinates(self, x_end, x_start, y_start, y_end):
         shape = self.image.shape
-        x_axis = np.linspace(x_start, x_end, shape[1]) - 1.8
+        x_axis = np.linspace(x_start, x_end, shape[1]) - 3
         y_axis = np.linspace(y_start, y_end, shape[0])
         self.coord = np.zeros((shape[0], shape[1], 2))
         for index, y in enumerate(y_axis):
@@ -294,7 +301,7 @@ class BlueBoxFinder(Node):
         max_index_x = decomposed_image.shape[1]
         max_index_y = decomposed_image.shape[0]
         
-        if current_index not in self.explored or current_index in self.unexplored:  
+        if current_index not in self.explored and current_index in self.unexplored:  
             self.explored.append(current_index)
             self.unexplored.remove(current_index)
         
@@ -399,18 +406,20 @@ class BlueBoxFinder(Node):
        
     def find_centre(self):
         contours, _ = cv2.findContours(self.blue_mask, mode=cv2.RETR_TREE, method=cv2.CHAIN_APPROX_SIMPLE)
+        cx = 0
 
         if len(contours) > 0:
             c = max(contours, key=cv2.contourArea)
 
             #Moments can calculate the center of the contour
             M = cv2.moments(c)
-            cx, cy = int(M['m10']/M['m00']), int(M['m01']/M['m00'])
+            cx, _ = int(M['m10']/M['m00']), int(M['m01']/M['m00'])
             
-        return cx, cy
+        return cx
     
     def find_area(self):
         contours, _ = cv2.findContours(self.blue_mask, mode=cv2.RETR_TREE, method=cv2.CHAIN_APPROX_SIMPLE)
+        area = -1
 
         if len(contours) > 0:
             c = max(contours, key=cv2.contourArea)
@@ -420,14 +429,14 @@ class BlueBoxFinder(Node):
         return area
        
     def centre_blue_box(self):
-        cx, cy = self.find_centre()
+        cx = self.find_centre()
         TARGET_CENTRE = 478
         while cx < TARGET_CENTRE - 8 or cx > TARGET_CENTRE + 8:
             # The speed of rotation is dependent on the error. An addition division by 5 is added to reduce speed
             error = ((TARGET_CENTRE - cx) / TARGET_CENTRE * MAX_ANGULAR_VEL) / 5
             self.rotate(error)
             print(f"Rotating: {error}")
-            cx, cy = self.find_centre()
+            cx = self.find_centre()
             
     def move_towards_box(self):
         self.centre_blue_box()
@@ -465,7 +474,7 @@ class BlueBoxFinder(Node):
         self.generate_coordinates(9.93, -12.2, 6.39, -15.8)
         
         print("Decomposing Image...")
-        decomposed_image = min_pool(self.image, 20)
+        decomposed_image = min_pool(self.image, 27)
         # x_axis = np.linspace(0, decomposed_image.shape[1] - 1, decomposed_image.shape[1])
         # y_axis = np.linspace(0, decomposed_image.shape[0] - 1, decomposed_image.shape[0])
         # self.unexplored = np.zeros((decomposed_image.shape[0], decomposed_image.shape[1], 2))
@@ -476,11 +485,11 @@ class BlueBoxFinder(Node):
         self.unexplored = np.argwhere(decomposed_image).tolist()
         
         print("Decomposing Coordinates...")
-        decomposed_coord = redefine_values(self.coord, 20, 2)
+        decomposed_coord = redefine_values(self.coord, 27, 2)
         
         print("Finding Current Position...")
         # print(f"{decomposed_coord.shape}, {self.position}")
-        current_index = find_current_node(self.position, decomposed_coord)
+        current_index = find_current_node(self.position, decomposed_coord[decomposed_image > 0], decomposed_coord)
         
         print(f"Current position is {decomposed_coord[current_index[0], current_index[1], :]}, Index {current_index}")
         blue_found = False
@@ -497,20 +506,23 @@ class BlueBoxFinder(Node):
                 self.expand_point(current_index, decomposed_image)
                 
                 print("Choosing Next Node...")
-                next_node_index = find_nearest_node(current_index, self.unexplored)
+                next_node_index = find_furthest_node(current_index, self.unexplored)
                 print(f"Node Chosen is {decomposed_coord[next_node_index[0], next_node_index[1]]}, Index {next_node_index}")
                 # next_node = decomposed_coord[next_node_index[0], next_node_index[1]]
                 
                 planner = PathPlanner(current_index, next_node_index, decomposed_image)
                 path = planner.plan()
-                path.pop(0)
+                start = path.pop(0)
                 for node_index in path:
                     plt.imshow(decomposed_image, cmap='gray')
                     path_print = np.array(path)
                     un_print = np.array(self.explored)
                     plt.scatter(un_print[:, 1], un_print[:, 0])
                     plt.scatter(path_print[:, 1], path_print[:, 0], marker='X')
+                    plt.scatter(start[1], start[0], marker='v')
+                    plt.scatter(path_print[-1, 1], path_print[-1, 0], marker='^')
                     plt.show(block=False)
+                    plt.pause(2)
                     
                     next_node = decomposed_coord[node_index[0], node_index[1]]
                 # path.pop(0) # Remove the start node
@@ -521,15 +533,15 @@ class BlueBoxFinder(Node):
                 
                     self.target = next_node
                     self.send_goal(float(next_node[0]), float(next_node[1]), 0.0)  # example coordinates
-                    distance = np.linalg.norm(self.target - self.position)
                     while not self.arrived:
-                        print(distance)
-                        distance = np.linalg.norm(self.target - self.position)
                         time.sleep(1)
                         
                     self.spin_360()
                     self.expand_point(node_index, decomposed_image)
-                current_index = next_node_index
+                    if self.blue_found:
+                        break
+                    current_index = node_index
+                # current_index = next_node_index
         while True:
                 time.sleep(10)
     
@@ -595,9 +607,9 @@ def redefine_values(frame, kernel_size, dimensions):
 
     return result_arr
 
-def find_nearest_node(current, nodes):
+def find_furthest_node(current, nodes):
     distances = np.linalg.norm(np.array(nodes) - np.array(current), axis=1)
-    node = nodes[np.argmin(distances)]
+    node = nodes[np.argmax(distances)]
     return node
 
 def validate_index(index, max_x, max_y):
@@ -626,14 +638,15 @@ def validate_index(index, max_x, max_y):
     #     if free and left not in explored:
     #         nodes_to_expand.append(left)
             
-def find_current_node(position, image):
-    distances = np.linalg.norm(image - position, axis=2)
+def find_current_node(position, filtered_coords, decomposed_coords):
+    distances = np.linalg.norm(filtered_coords - position, axis=1) # Find the distances
     # print(distances)
     # print(distances.shape)
-    index_flat = np.argmin(distances)
-    row_index = index_flat // image.shape[1]
-    col_index = index_flat % image.shape[1]
-    return [row_index, col_index]
+    closest_index = np.argmin(distances) # Find the index of the shortest distance
+    closest = filtered_coords[closest_index] # Use the index to find the closest point to the current position
+    row_index, col_index = np.where(np.all(decomposed_coords == closest, axis=2)) # Find the row and column in the coordinates array
+    # print(row_index, col_index)
+    return [row_index[0], col_index[0]] # The index of 0 avoids a 2D list of [[row], [col]] and instead gives [row, col]
 
 def main():
     def signal_handler(sig, frame):
