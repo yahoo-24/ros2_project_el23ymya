@@ -20,10 +20,6 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'first_step = ros2_project_el23ymya.first_step:main',
-            'second_step = ros2_project_el23ymya.second_step:main',
-            'third_step = ros2_project_el23ymya.third_step:main',
-            'fourth_step = ros2_project_el23ymya.fourth_step:main',
             'bbx = ros2_project_el23ymya.BlueBoxFinder:main',
         ],
     },
