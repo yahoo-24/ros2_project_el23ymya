@@ -10,8 +10,8 @@ The system uses:
 - OpenCV for image processing and color detection
 - A min-pooling approach for map decomposition and path planning
 
-Author: [Your Name]
-Date: [Date]
+Author: Yahia Abuhelweh (Mostly)
+A few bits of code were taken from University of Leeds COMP3631 module
 """
 
 import threading
